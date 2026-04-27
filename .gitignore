@@ -3,3 +3,4 @@ acrcloud.json
 __pycache__/
 *.pyc
 bot.log
+.worktrees/
