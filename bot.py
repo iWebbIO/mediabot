@@ -618,26 +618,121 @@ async def ytdlp_playlist_download(
 
 # ── Spotify via spotdl ─────────────────────────────────────────────────────────
 
-async def spotdl_download(url: str, workdir: str, kbps: str) -> tuple[str | None, str]:
+def _spotify_track_info_embed(url: str) -> dict:
+    """Get track title/artist/thumbnail from Spotify embed page — no API auth needed."""
+    import re as _re, json as _json, requests as _req
+    m = _re.search(r"/track/([A-Za-z0-9]+)", url)
+    if not m:
+        return {}
+    tid = m.group(1)
+    r = _req.get(
+        f"https://open.spotify.com/embed/track/{tid}",
+        headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
+    )
+    r.raise_for_status()
+    nd = _re.findall(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text)
+    if not nd:
+        return {}
+    data = _json.loads(nd[0])
+    entity = data["props"]["pageProps"]["state"]["data"]["entity"]
+    title = entity.get("name", "")
+    artists = [a["name"] for a in entity.get("artists", [])]
+    # Get highest-res cover image
+    images = entity.get("coverArt", {}).get("sources") or []
+    thumb_url = images[0]["url"] if images else None
+    thumb_bytes = None
+    if thumb_url:
+        try:
+            thumb_bytes = _req.get(thumb_url, timeout=10).content
+        except Exception:
+            pass
+    return {"title": title, "artist": ", ".join(artists), "thumb_bytes": thumb_bytes}
+
+
+def _embed_spotify_tags(mp3_path: str, title: str, artist: str, thumb_bytes: bytes | None):
+    """Overwrite ID3 tags on an mp3 with Spotify metadata."""
     try:
-        loop = asyncio.get_event_loop()
-        def _dl():
-            return subprocess.run(
-                ["python3.13", "-m", "spotdl", url,
- "--output", workdir, "--bitrate", f"{kbps}k", "--format", "mp3",
- "--client-id", SP_CLIENT_ID,
- "--client-secret", SP_CLIENT_SECRET],
-                capture_output=True, text=True, timeout=300,
-            )
-        result = await loop.run_in_executor(None, _dl)
-        if result.returncode != 0:
-            return None, result.stderr[-500:]
-        candidates = list(Path(workdir).glob("*.mp3"))
-        if not candidates:
-            return None, "No mp3 produced by spotdl."
-        return str(max(candidates, key=lambda p: p.stat().st_size)), ""
+        from mutagen.id3 import ID3, TIT2, TPE1, APIC, error as ID3Error
+        try:
+            tags = ID3(mp3_path)
+        except ID3Error:
+            tags = ID3()
+        tags["TIT2"] = TIT2(encoding=3, text=title)
+        tags["TPE1"] = TPE1(encoding=3, text=artist)
+        if thumb_bytes:
+            tags["APIC"] = APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=thumb_bytes)
+        tags.save(mp3_path)
+    except Exception:
+        pass
+
+
+async def spotdl_download(url: str, workdir: str, kbps: str) -> tuple[str | None, str]:
+    loop = asyncio.get_event_loop()
+
+    # Try spotdl first (fast path)
+    last_err = ""
+    def _dl_spotdl():
+        import threading
+        proc = subprocess.Popen(
+            ["python3.13", "-m", "spotdl", url,
+             "--output", workdir, "--bitrate", f"{kbps}k", "--format", "mp3",
+             "--client-id", SP_CLIENT_ID,
+             "--client-secret", SP_CLIENT_SECRET],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        stdout_lines, stderr_lines = [], []
+        def _read(stream, buf):
+            for line in stream:
+                buf.append(line)
+                low = line.lower()
+                if "rate" in low and ("limit" in low or "retry" in low):
+                    proc.kill()
+        t1 = threading.Thread(target=_read, args=(proc.stdout, stdout_lines), daemon=True)
+        t2 = threading.Thread(target=_read, args=(proc.stderr, stderr_lines), daemon=True)
+        t1.start(); t2.start()
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        t1.join(5); t2.join(5)
+        class _R:
+            returncode = proc.returncode
+            stdout = "".join(stdout_lines)
+            stderr = "".join(stderr_lines)
+        return _R()
+
+    try:
+        result = await loop.run_in_executor(None, _dl_spotdl)
+        combined = (result.stdout + result.stderr).lower()
+        if "rate" not in combined or ("limit" not in combined and "retry" not in combined):
+            if result.returncode == 0:
+                candidates = list(Path(workdir).glob("*.mp3"))
+                if candidates:
+                    return str(max(candidates, key=lambda p: p.stat().st_size)), ""
+            last_err = result.stderr[-300:] or result.stdout[-300:]
+        else:
+            last_err = "rate_limit"
     except Exception as e:
-        return None, str(e)
+        last_err = str(e)
+
+    if last_err == "rate_limit" or not last_err.strip():
+        # Fallback: scrape track info from embed page, search YouTube via yt-dlp
+        try:
+            info = await loop.run_in_executor(None, _spotify_track_info_embed, url)
+            if info.get("title"):
+                query = f"{info['artist']} - {info['title']}" if info.get("artist") else info["title"]
+                out, err = await ytdlp_download(f"ytsearch1:{query}", workdir, "audio", kbps)
+                if out:
+                    await loop.run_in_executor(
+                        None, _embed_spotify_tags,
+                        out, info["title"], info.get("artist", ""), info.get("thumb_bytes"),
+                    )
+                    return out, ""
+                last_err = err
+        except Exception as e:
+            last_err = str(e)
+
+    return None, last_err
 
 
 async def spotdl_playlist_download(
@@ -657,26 +752,38 @@ async def spotdl_playlist_download(
             logger.warning("Embed playlist fetch failed: %s", e)
 
     if track_urls:
-        # Download each track individually via spotdl
-        files = []
-        for i, track_url in enumerate(track_urls, 1):
-            if status_cb:
-                await status_cb(f"⬇️ Downloading track {i}/{len(track_urls)}…")
-            def _dl_single(t_url=track_url, idx=i):
+        sem = asyncio.Semaphore(10)
+        done = [0]
+        total_tracks = len(track_urls)
+
+        async def _dl_track(t_url: str, idx: int):
+            def _run():
                 return subprocess.run(
                     ["python3.13", "-m", "spotdl", t_url,
                      "--output", os.path.join(workdir, f"{idx:03d} - {{title}}"),
                      "--bitrate", f"{kbps}k", "--format", "mp3",
                      "--client-id", SP_CLIENT_ID,
-                     "--client-secret", SP_CLIENT_SECRET],
+                     "--client-secret", SP_CLIENT_SECRET,
+                     "--cookie-file", "cookies.txt",
+                     "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
                     capture_output=True, text=True, timeout=300,
                 )
-            try:
-                result = await loop.run_in_executor(None, _dl_single)
-                if result.returncode != 0:
-                    logger.warning("spotdl track %d failed: %s", i, result.stderr[-300:])
-            except Exception as e:
-                logger.warning("spotdl track %d error: %s", i, e)
+            async with sem:
+                for attempt in range(3):
+                    try:
+                        result = await loop.run_in_executor(None, _run)
+                        if result.returncode == 0:
+                            break
+                        logger.warning("spotdl track %d attempt %d failed: %s", idx, attempt + 1, result.stderr[-300:])
+                    except Exception as e:
+                        logger.warning("spotdl track %d attempt %d error: %s", idx, attempt + 1, e)
+                    if attempt < 2:
+                        await asyncio.sleep(3)
+            done[0] += 1
+            if status_cb:
+                await status_cb(f"⬇️ Downloading Spotify playlist… {done[0]}/{total_tracks}")
+
+        await asyncio.gather(*[_dl_track(t_url, i) for i, t_url in enumerate(track_urls, 1)])
     else:
         # Albums / artists: spotdl handles these natively
         if status_cb:
@@ -687,7 +794,8 @@ async def spotdl_playlist_download(
                  "--output", os.path.join(workdir, "{list-position:03d} - {title}"),
                  "--bitrate", f"{kbps}k", "--format", "mp3",
                  "--client-id", SP_CLIENT_ID,
-                 "--client-secret", SP_CLIENT_SECRET],
+                 "--client-secret", SP_CLIENT_SECRET,
+                 "--cookie-file", "cookies.txt"],
                 capture_output=True, text=True, timeout=1800,
             )
         try:
@@ -941,8 +1049,8 @@ def _yt_search_sync(query: str, n: int = 10) -> list[dict]:
     return results
 
 
-SP_CLIENT_ID     = "57bd4e27a02543e69231328957fb3f88"
-SP_CLIENT_SECRET = "3fda9a99e45b41cf9ce53bde528acc6d"
+SP_CLIENT_ID     = "4f96c2aa3c104370bf6d6e089d5b889a"
+SP_CLIENT_SECRET = "c9466df1bfed47a7b1d2dd5f1da874d3"
 
 def _sp_get_token() -> str:
     import base64
@@ -2015,13 +2123,22 @@ async def process_playlist(query, message: Message, context: ContextTypes.DEFAUL
         collection_title = state.get("info", {}).get("title", domain)
         await query.edit_message_text(f"✅ {total} tracks ready. Uploading…")
 
-        for i, fpath in enumerate(files, 1):
-            try:
-                await send_audio_file(message, fpath, "")
-                stats_add(downloads=1, mb_dl=os.path.getsize(fpath) / 1024 / 1024)
-            except Exception as e:
-                logger.warning("Track %d send failed: %s", i, e)
-                await message.reply_text(f"⚠️ Track {i} failed: {e}")
+        up_sem = asyncio.Semaphore(10)
+        gates = [asyncio.Event() for _ in range(total + 1)]
+        gates[0].set()
+
+        async def _upload_ordered(i: int, fpath: str):
+            async with up_sem:
+                await gates[i].wait()
+                gates[i + 1].set()
+                try:
+                    await send_audio_file(message, fpath, "")
+                    stats_add(downloads=1, mb_dl=os.path.getsize(fpath) / 1024 / 1024)
+                except Exception as e:
+                    logger.warning("Track %d send failed: %s", i + 1, e)
+                    await message.reply_text(f"⚠️ Track {i + 1} failed: {e}")
+
+        await asyncio.gather(*[_upload_ordered(i, f) for i, f in enumerate(files)])
 
         await message.reply_text(f"🎵 {collection_title}\n{total} tracks")
 
