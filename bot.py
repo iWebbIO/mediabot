@@ -24,6 +24,14 @@ import subprocess
 from pathlib import Path
 
 from src.config import get_settings
+from src.utils.urls import (
+    extract_urls, domain_of, is_audio_only_platform,
+    is_youtube_playlist, is_spotify_playlist, is_soundcloud_playlist
+)
+from src.bot_ui.keyboards import (
+    AUDIO_QUALITIES, VIDEO_QUALITIES, SPEED_OPTIONS,
+    COMPRESS_OPTIONS, IMAGE_FORMATS, AUDIO_FORMATS, VIDEO_FORMATS
+)
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
@@ -602,8 +610,8 @@ async def spotdl_download(url: str, workdir: str, kbps: str) -> tuple[str | None
         proc = subprocess.Popen(
             ["python3.13", "-m", "spotdl", url,
              "--output", workdir, "--bitrate", f"{kbps}k", "--format", "mp3",
-             "--client-id", SP_CLIENT_ID,
-             "--client-secret", SP_CLIENT_SECRET,
+             "--client-id", settings.spotify_client_id,
+             "--client-secret", settings.spotify_client_secret,
              "--cookie-file", "cookies.txt",
              "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -690,8 +698,8 @@ async def spotdl_playlist_download(
                     ["python3.13", "-m", "spotdl", t_url,
                      "--output", os.path.join(workdir, f"{idx:03d} - {{title}}"),
                      "--bitrate", f"{kbps}k", "--format", "mp3",
-                     "--client-id", SP_CLIENT_ID,
-                     "--client-secret", SP_CLIENT_SECRET,
+                     "--client-id", settings.spotify_client_id,
+                     "--client-secret", settings.spotify_client_secret,
                      "--cookie-file", "cookies.txt",
                      "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
                     capture_output=True, text=True, timeout=300,
@@ -721,8 +729,8 @@ async def spotdl_playlist_download(
                 ["python3.13", "-m", "spotdl", url,
                  "--output", os.path.join(workdir, "{list-position:03d} - {title}"),
                  "--bitrate", f"{kbps}k", "--format", "mp3",
-                 "--client-id", SP_CLIENT_ID,
-                 "--client-secret", SP_CLIENT_SECRET,
+                 "--client-id", settings.spotify_client_id,
+                 "--client-secret", settings.spotify_client_secret,
                  "--cookie-file", "cookies.txt",
                  "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
                 capture_output=True, text=True, timeout=1800,
