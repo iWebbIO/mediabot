@@ -292,7 +292,11 @@ def kb_media_type() -> InlineKeyboardMarkup:
 def kb_audio_quality() -> InlineKeyboardMarkup:
     row = [InlineKeyboardButton(label, callback_data=f"aq|{val}")
            for label, val in AUDIO_QUALITIES]
-    return InlineKeyboardMarkup([row])
+    return InlineKeyboardMarkup([
+        row,
+        # Removed the explicit "Custom Bitrate" button, user will reply if they want custom
+        [InlineKeyboardButton("✏️ Custom", callback_data="aq|custom")]
+    ])
 
 
 def kb_video_quality() -> InlineKeyboardMarkup:
@@ -1495,6 +1499,26 @@ async def _recognize(path: str) -> dict | None:
 # ── text / URL handler ─────────────────────────────────────────────────────────
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ── Pending bitrate input ──────────────────────────────────────────────────
+    bitrate_key = context.user_data.pop("pending_bitrate", None)
+    if bitrate_key:
+        val = update.message.text.strip()
+        if not val.isdigit():
+            context.user_data["pending_bitrate"] = bitrate_key
+            await update.message.reply_text("❌ Please enter a valid numeric bitrate (e.g., 256):")
+            return
+        state = context.user_data.get(bitrate_key)
+        if not state:
+            await update.message.reply_text("❌ Session expired. Please send the link or file again.")
+            return
+        state["quality"] = val
+        state["media_type"] = "audio"
+        await update.message.reply_text(
+            f"✅ Bitrate set to {val} kbps.\n🎚 Choose playback speed:",
+            reply_markup=kb_speed()
+        )
+        return
+
     # ── Pending search query ───────────────────────────────────────────────────
     pending = context.user_data.pop("pending_search", None)
     if pending:
@@ -1876,6 +1900,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Audio quality → show speed ─────────────────────────────────────────────
     if action == "aq":
+        if value == "custom":
+            context.user_data["pending_bitrate"] = key # Mark session for pending bitrate input
+            await query.edit_message_text("⌨️ Please reply to this message with your desired bitrate in kbps (e.g., 256):")
+            return
         state["quality"] = value
         state["media_type"] = "audio"
         await query.edit_message_text("🎚 Choose playback speed:", reply_markup=kb_speed())
