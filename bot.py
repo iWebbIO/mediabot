@@ -22,7 +22,8 @@ import logging
 import tempfile
 import subprocess
 from pathlib import Path
-from dotenv import load_dotenv
+
+from src.config import get_settings
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
@@ -31,25 +32,23 @@ from telegram.ext import (
 )
 from imageio_ffmpeg import get_ffmpeg_exe
 
-# Load environment variables
-load_dotenv()
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# Initialize settings from src/config.py
+settings = get_settings()
 
 # Global ffmpeg path for container compatibility
 FFMPEG_EXE = get_ffmpeg_exe()
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-DOWNLOAD_DIR = Path.home() / "Documents" / "bot_downloads"
+BOT_TOKEN = settings.bot_token
+DOWNLOAD_DIR = Path(settings.base_download_dir)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
 STATS_FILE = DOWNLOAD_DIR / "stats.json"
 
 # Active jobs counter (asyncio is single-threaded, no lock needed)
 active_jobs = 0
-MAX_JOBS = 3
+MAX_JOBS = settings.max_jobs_global
 
 # Platforms where only audio makes sense (skip video option)
 AUDIO_ONLY_DOMAINS = {
@@ -132,7 +131,7 @@ def is_soundcloud_playlist(url: str) -> bool:
     return "soundcloud.com" in url and "/sets/" in url
 
 
-def run_ffmpeg(args: list[str], timeout: int = 600) -> tuple[bool, str]:
+def run_ffmpeg(args: list[str], timeout: int = settings.ffmpeg_timeout_sec) -> tuple[bool, str]:
     result = subprocess.run(
         [FFMPEG_EXE, "-y"] + args,
         capture_output=True, text=True, timeout=timeout,
@@ -292,11 +291,7 @@ def kb_media_type() -> InlineKeyboardMarkup:
 def kb_audio_quality() -> InlineKeyboardMarkup:
     row = [InlineKeyboardButton(label, callback_data=f"aq|{val}")
            for label, val in AUDIO_QUALITIES]
-    return InlineKeyboardMarkup([
-        row,
-        # Removed the explicit "Custom Bitrate" button, user will reply if they want custom
-        [InlineKeyboardButton("✏️ Custom", callback_data="aq|custom")]
-    ])
+    return InlineKeyboardMarkup([row])
 
 
 def kb_video_quality() -> InlineKeyboardMarkup:
@@ -1500,24 +1495,25 @@ async def _recognize(path: str) -> dict | None:
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Pending bitrate input ──────────────────────────────────────────────────
-    bitrate_key = context.user_data.pop("pending_bitrate", None)
-    if bitrate_key:
-        val = update.message.text.strip()
-        if not val.isdigit():
-            context.user_data["pending_bitrate"] = bitrate_key
-            await update.message.reply_text("❌ Please enter a valid numeric bitrate (e.g., 256):")
+    bitrate_key = context.user_data.get("pending_bitrate")
+    if bitrate_key and update.message.text:
+        text_val = update.message.text.strip()
+        if text_val.isdigit():
+            context.user_data.pop("pending_bitrate")
+            state = context.user_data.get(bitrate_key)
+            if not state:
+                await update.message.reply_text("❌ Session expired. Please send the link or file again.")
+                return
+            state["quality"] = text_val
+            state["media_type"] = "audio"
+            await update.message.reply_text(
+                f"✅ Bitrate set to {text_val} kbps.\n🎚 Choose playback speed:",
+                reply_markup=kb_speed()
+            )
             return
-        state = context.user_data.get(bitrate_key)
-        if not state:
-            await update.message.reply_text("❌ Session expired. Please send the link or file again.")
-            return
-        state["quality"] = val
-        state["media_type"] = "audio"
-        await update.message.reply_text(
-            f"✅ Bitrate set to {val} kbps.\n🎚 Choose playback speed:",
-            reply_markup=kb_speed()
-        )
-        return
+    
+    # Not a custom bitrate or session expired; clear flag to allow URL/Search processing
+    context.user_data.pop("pending_bitrate", None)
 
     # ── Pending search query ───────────────────────────────────────────────────
     pending = context.user_data.pop("pending_search", None)
@@ -1579,7 +1575,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["last_key"] = key
 
         await status.edit_text(
-            f"📃 *{info['title']}*\n{info['count']} tracks\n\nChoose audio quality:",
+            f"📃 *{info['title']}*\n{info['count']} tracks\n\n"
+            "Choose audio quality (or reply with a custom bitrate in kbps):",
             reply_markup=kb_audio_quality(),
             parse_mode="Markdown",
         )
@@ -1592,8 +1589,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_audio_only_platform(url):
         context.user_data[key]["media_type"] = "audio"
+        context.user_data["pending_bitrate"] = key
         await update.message.reply_text(
-            f"🔗 {domain}\nChoose audio quality:",
+            f"🔗 {domain}\nChoose audio quality (or reply with a custom bitrate):",
             reply_markup=kb_audio_quality(),
         )
     else:
@@ -1764,8 +1762,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["last_key"] = new_key
         context.user_data.pop(key, None)
         await query.edit_message_text(
-            f"☁️ {result['title']}\nChoose audio quality:", reply_markup=kb_audio_quality()
+            f"☁️ {result['title']}\nChoose audio quality (or reply with a custom bitrate):", 
+            reply_markup=kb_audio_quality()
         )
+        context.user_data["pending_bitrate"] = new_key
         return
 
     # ── Spotify search result ──────────────────────────────────────────────────
@@ -1777,8 +1777,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["last_key"] = new_key
         context.user_data.pop(key, None)
         await query.edit_message_text(
-            f"🎵 {result['title']}\nChoose audio quality:", reply_markup=kb_audio_quality()
+            f"🎵 {result['title']}\nChoose audio quality (or reply with a custom bitrate):", 
+            reply_markup=kb_audio_quality()
         )
+        context.user_data["pending_bitrate"] = new_key
         return
 
     # ── Shazam → download from Spotify ────────────────────────────────────────
@@ -1805,8 +1807,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[new_key] = {"type": "url", "url": top["url"], "media_type": "audio"}
         context.user_data["last_key"] = new_key
         await query.edit_message_text(
-            f"🎵 {top['title']}\nChoose audio quality:", reply_markup=kb_audio_quality()
+            f"🎵 {top['title']}\nChoose audio quality (or reply with a custom bitrate):", 
+            reply_markup=kb_audio_quality()
         )
+        context.user_data["pending_bitrate"] = new_key
         return
 
     # ── Lyrics find → download from Spotify ───────────────────────────────────
@@ -1836,8 +1840,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[new_key] = {"type": "url", "url": top["url"], "media_type": "audio"}
         context.user_data["last_key"] = new_key
         await query.edit_message_text(
-            f"🎵 {top['title']}\nChoose audio quality:", reply_markup=kb_audio_quality()
+            f"🎵 {top['title']}\nChoose audio quality (or reply with a custom bitrate):", 
+            reply_markup=kb_audio_quality()
         )
+        context.user_data["pending_bitrate"] = new_key
         return
 
     value = parts[1] if len(parts) > 1 else ""
@@ -1852,7 +1858,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("Choose output format:", reply_markup=kb_video_format())
         else:
             if value == "a":
-                await query.edit_message_text("Choose audio quality:", reply_markup=kb_audio_quality())
+                context.user_data["pending_bitrate"] = key
+                await query.edit_message_text(
+                    "Choose audio quality (or reply with a custom bitrate):", 
+                    reply_markup=kb_audio_quality()
+                )
             else:
                 # Skip quality picker — always use best available quality
                 state["quality"] = "1080"
@@ -1874,7 +1884,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["audio_format"] = value
         _, _, lossy, _ = AUDIO_FORMATS[value]
         if lossy:
-            await query.edit_message_text("Choose audio quality:", reply_markup=kb_audio_quality())
+            context.user_data["pending_bitrate"] = key
+            await query.edit_message_text(
+                "Choose audio quality (or reply with a custom bitrate):", 
+                reply_markup=kb_audio_quality()
+            )
         else:
             state["quality"] = "lossless"
             state["media_type"] = "audio"
@@ -1900,10 +1914,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Audio quality → show speed ─────────────────────────────────────────────
     if action == "aq":
-        if value == "custom":
-            context.user_data["pending_bitrate"] = key # Mark session for pending bitrate input
-            await query.edit_message_text("⌨️ Please reply to this message with your desired bitrate in kbps (e.g., 256):")
-            return
         state["quality"] = value
         state["media_type"] = "audio"
         await query.edit_message_text("🎚 Choose playback speed:", reply_markup=kb_speed())
