@@ -28,10 +28,14 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes,
 )
+from imageio_ffmpeg import get_ffmpeg_exe
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# Global ffmpeg path for container compatibility
+FFMPEG_EXE = get_ffmpeg_exe()
 
 BOT_TOKEN = "8675266123:AAGUD7N3JsNUyvvj08tboAGyKSgUPI3pJ8Y"
 
@@ -127,7 +131,7 @@ def is_soundcloud_playlist(url: str) -> bool:
 
 def run_ffmpeg(args: list[str], timeout: int = 600) -> tuple[bool, str]:
     result = subprocess.run(
-        ["ffmpeg", "-y"] + args,
+        [FFMPEG_EXE, "-y"] + args,
         capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode == 0:
@@ -677,7 +681,9 @@ async def spotdl_download(url: str, workdir: str, kbps: str) -> tuple[str | None
             ["python3.13", "-m", "spotdl", url,
              "--output", workdir, "--bitrate", f"{kbps}k", "--format", "mp3",
              "--client-id", SP_CLIENT_ID,
-             "--client-secret", SP_CLIENT_SECRET],
+             "--client-secret", SP_CLIENT_SECRET,
+             "--cookie-file", "cookies.txt",
+             "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         stdout_lines, stderr_lines = [], []
@@ -691,7 +697,7 @@ async def spotdl_download(url: str, workdir: str, kbps: str) -> tuple[str | None
         t2 = threading.Thread(target=_read, args=(proc.stderr, stderr_lines), daemon=True)
         t1.start(); t2.start()
         try:
-            proc.wait(timeout=60)
+            proc.wait(timeout=300)
         except subprocess.TimeoutExpired:
             proc.kill()
         t1.join(5); t2.join(5)
@@ -795,7 +801,8 @@ async def spotdl_playlist_download(
                  "--bitrate", f"{kbps}k", "--format", "mp3",
                  "--client-id", SP_CLIENT_ID,
                  "--client-secret", SP_CLIENT_SECRET,
-                 "--cookie-file", "cookies.txt"],
+                 "--cookie-file", "cookies.txt",
+                 "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
                 capture_output=True, text=True, timeout=1800,
             )
         try:
@@ -858,7 +865,7 @@ def _split_file_sync(src: str, workdir: str) -> list[str]:
     pattern = os.path.join(workdir, f"{stem}_part%03d{ext}")
 
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", src, "-c", "copy",
+        [FFMPEG_EXE, "-y", "-i", src, "-c", "copy",
          "-f", "segment", "-segment_time", str(part_duration),
          "-reset_timestamps", "1", pattern],
         capture_output=True, text=True, timeout=600,
@@ -1049,8 +1056,8 @@ def _yt_search_sync(query: str, n: int = 10) -> list[dict]:
     return results
 
 
-SP_CLIENT_ID     = "4f96c2aa3c104370bf6d6e089d5b889a"
-SP_CLIENT_SECRET = "c9466df1bfed47a7b1d2dd5f1da874d3"
+SP_CLIENT_ID     = "57bd4e27a02543e69231328957fb3f88"
+SP_CLIENT_SECRET = "3fda9a99e45b41cf9ce53bde528acc6d"
 
 def _sp_get_token() -> str:
     import base64

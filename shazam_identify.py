@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from shazamio import Shazam
+from imageio_ffmpeg import get_ffmpeg_exe
 
 BASE_DIR = Path(__file__).resolve().parent
 ACRCLOUD_CONFIG_CANDIDATES = (
@@ -24,6 +25,7 @@ ACRCLOUD_CONFIG_CANDIDATES = (
     BASE_DIR / ".acrcloud.json",
 )
 
+FFMPEG_EXE = get_ffmpeg_exe()
 
 def _load_json(path: Path) -> dict:
     try:
@@ -105,7 +107,7 @@ def _trim_sample_for_acrcloud(src_path: str) -> tuple[bytes, str, str]:
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-y",
+                FFMPEG_EXE, "-y",
                 "-i", src_path,
                 "-t", "12",
                 "-ac", "1",
