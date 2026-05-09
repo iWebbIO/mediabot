@@ -30,14 +30,21 @@ SPEED_OPTIONS: List[Tuple[str, str]] = [
     ("2×", "2.0"),
 ]
 
+COMPRESS_OPTIONS: List[Tuple[str, str]] = [
+    ("None",   "none"),
+    ("Light",  "light"),
+    ("Medium", "medium"),
+    ("Heavy",  "heavy"),
+]
 
-IMAGE_FORMATS: Dict[str, Tuple[str, str]] = {
-    "jpg": ("JPG", "jpg"),
-    "png": ("PNG", "png"),
-    "webp": ("WEBP", "webp"),
-    "gif": ("GIF", "gif"),
-    "bmp": ("BMP", "bmp"),
-    "tiff": ("TIFF", "tiff"),
+
+IMAGE_FORMATS: Dict[str, Tuple[str, str, List[str]]] = {
+    "jpg":  ("JPG",  "jpg",  ["-q:v", "2"]),
+    "png":  ("PNG",  "png",  ["-update", "1"]),
+    "webp": ("WEBP", "webp", ["-q:v", "90", "-update", "1"]),
+    "gif":  ("GIF",  "gif",  []),
+    "bmp":  ("BMP",  "bmp",  ["-update", "1"]),
+    "tiff": ("TIFF", "tiff", ["-update", "1"]),
 }
 
 
@@ -84,5 +91,3 @@ def kb_custom_bitrate_prompt() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🎲 Use recommended", callback_data="cb|recommended")],
         ]
     )
-
-

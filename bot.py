@@ -24,6 +24,14 @@ import subprocess
 from pathlib import Path
 
 from src.config import get_settings
+from src.utils.urls import (
+    extract_urls, domain_of, is_audio_only_platform,
+    is_youtube_playlist, is_spotify_playlist, is_soundcloud_playlist
+)
+from src.bot_ui.keyboards import (
+    AUDIO_QUALITIES, VIDEO_QUALITIES, SPEED_OPTIONS,
+    COMPRESS_OPTIONS, IMAGE_FORMATS, AUDIO_FORMATS, VIDEO_FORMATS
+)
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
@@ -49,86 +57,6 @@ STATS_FILE = DOWNLOAD_DIR / "stats.json"
 # Active jobs counter (asyncio is single-threaded, no lock needed)
 active_jobs = 0
 MAX_JOBS = settings.max_jobs_global
-
-# Platforms where only audio makes sense (skip video option)
-AUDIO_ONLY_DOMAINS = {
-    "spotify.com", "open.spotify.com",
-    "soundcloud.com", "m.soundcloud.com",
-    "deezer.com", "www.deezer.com",
-    "music.apple.com",
-    "tidal.com",
-}
-
-AUDIO_QUALITIES = [("24 kbps", "24"), ("64 kbps", "64"), ("128 kbps", "128"),
-                   ("192 kbps", "192"), ("320 kbps", "320")]
-VIDEO_QUALITIES = [("360p", "360"), ("480p", "480"),
-                   ("720p", "720"), ("1080p", "1080"), ("4K", "2160")]
-SPEED_OPTIONS   = [("0.5×", "0.5"), ("0.75×", "0.75"), ("1×", "1.0"),
-                   ("1.25×", "1.25"), ("1.5×", "1.5"), ("2×", "2.0")]
-COMPRESS_OPTIONS = [
-    ("None",   "none"),
-    ("Light",  "light"),    # ~128 kbps + loudnorm  (~50% smaller vs 320)
-    ("Medium", "medium"),   # ~80 kbps  + loudnorm
-    ("Heavy",  "heavy"),    # ~48 kbps  + loudnorm  (max size cut)
-]
-
-# Image output formats: key → (label, file_ext, ffmpeg_extra_args)
-IMAGE_FORMATS = {
-    "jpg":  ("JPG",  "jpg",  ["-q:v", "2"]),
-    "png":  ("PNG",  "png",  ["-update", "1"]),
-    "webp": ("WEBP", "webp", ["-q:v", "90", "-update", "1"]),
-    "gif":  ("GIF",  "gif",  []),
-    "bmp":  ("BMP",  "bmp",  ["-update", "1"]),
-    "tiff": ("TIFF", "tiff", ["-update", "1"]),
-}
-
-# Audio output formats: key → (label, ffmpeg_codec, lossy, file_ext)
-AUDIO_FORMATS = {
-    "mp3":  ("MP3",  "libmp3lame", True,  "mp3"),
-    "aac":  ("AAC",  "aac",        True,  "m4a"),
-    "ogg":  ("OGG",  "libvorbis",  True,  "ogg"),
-    "opus": ("OPUS", "libopus",    True,  "opus"),
-    "m4a":  ("M4A",  "aac",        True,  "m4a"),
-    "flac": ("FLAC", "flac",       False, "flac"),
-    "wav":  ("WAV",  "pcm_s16le",  False, "wav"),
-}
-
-# Video output formats: key → (label, vcodec, acodec, file_ext)
-VIDEO_FORMATS = {
-    "mp4":  ("MP4",  "libx264",    "aac",        "mp4"),
-    "mkv":  ("MKV",  "libx264",    "aac",        "mkv"),
-    "mov":  ("MOV",  "libx264",    "aac",        "mov"),
-    "webm": ("WEBM", "libvpx-vp9", "libopus",    "webm"),
-    "avi":  ("AVI",  "libxvid",    "libmp3lame", "avi"),
-}
-
-
-# ── helpers ────────────────────────────────────────────────────────────────────
-
-def extract_urls(text: str) -> list[str]:
-    return re.findall(r'https?://[^\s]+', text or "")
-
-
-def domain_of(url: str) -> str:
-    m = re.search(r'https?://([^/]+)', url)
-    return m.group(1).lstrip("www.") if m else ""
-
-
-def is_audio_only_platform(url: str) -> bool:
-    d = domain_of(url)
-    return any(d == ao or d.endswith("." + ao) for ao in AUDIO_ONLY_DOMAINS)
-
-
-def is_youtube_playlist(url: str) -> bool:
-    return "youtube.com" in url and "list=" in url and "watch?v=" not in url
-
-
-def is_spotify_playlist(url: str) -> bool:
-    return "spotify.com" in url and any(x in url for x in ("/playlist/", "/album/", "/artist/"))
-
-
-def is_soundcloud_playlist(url: str) -> bool:
-    return "soundcloud.com" in url and "/sets/" in url
 
 
 def run_ffmpeg(args: list[str], timeout: int = settings.ffmpeg_timeout_sec) -> tuple[bool, str]:
@@ -682,8 +610,8 @@ async def spotdl_download(url: str, workdir: str, kbps: str) -> tuple[str | None
         proc = subprocess.Popen(
             ["python3.13", "-m", "spotdl", url,
              "--output", workdir, "--bitrate", f"{kbps}k", "--format", "mp3",
-             "--client-id", SP_CLIENT_ID,
-             "--client-secret", SP_CLIENT_SECRET,
+             "--client-id", settings.spotify_client_id,
+             "--client-secret", settings.spotify_client_secret,
              "--cookie-file", "cookies.txt",
              "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -770,8 +698,8 @@ async def spotdl_playlist_download(
                     ["python3.13", "-m", "spotdl", t_url,
                      "--output", os.path.join(workdir, f"{idx:03d} - {{title}}"),
                      "--bitrate", f"{kbps}k", "--format", "mp3",
-                     "--client-id", SP_CLIENT_ID,
-                     "--client-secret", SP_CLIENT_SECRET,
+                     "--client-id", settings.spotify_client_id,
+                     "--client-secret", settings.spotify_client_secret,
                      "--cookie-file", "cookies.txt",
                      "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
                     capture_output=True, text=True, timeout=300,
@@ -801,8 +729,8 @@ async def spotdl_playlist_download(
                 ["python3.13", "-m", "spotdl", url,
                  "--output", os.path.join(workdir, "{list-position:03d} - {title}"),
                  "--bitrate", f"{kbps}k", "--format", "mp3",
-                 "--client-id", SP_CLIENT_ID,
-                 "--client-secret", SP_CLIENT_SECRET,
+                 "--client-id", settings.spotify_client_id,
+                 "--client-secret", settings.spotify_client_secret,
                  "--cookie-file", "cookies.txt",
                  "--yt-dlp-args", "--cookies-from-browser firefox --js-runtimes node"],
                 capture_output=True, text=True, timeout=1800,
@@ -1058,13 +986,10 @@ def _yt_search_sync(query: str, n: int = 10) -> list[dict]:
     return results
 
 
-SP_CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID")
-SP_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-
 def _sp_get_token() -> str:
     import base64
     import requests as _req
-    creds = base64.b64encode(f"{SP_CLIENT_ID}:{SP_CLIENT_SECRET}".encode()).decode()
+    creds = base64.b64encode(f"{settings.spotify_client_id}:{settings.spotify_client_secret}".encode()).decode()
     r = _req.post(
         "https://accounts.spotify.com/api/token",
         data={"grant_type": "client_credentials"},

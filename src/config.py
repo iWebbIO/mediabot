@@ -37,6 +37,13 @@ class Settings:
     # Upload strategy
     upload_strategy: str = "pyrogram"  # pyrogram | mtproto_legacy
 
+    # Credentials
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
+    acr_host: str = ""
+    acr_access_key: str = ""
+    acr_access_secret: str = ""
+
 
 def get_settings() -> Settings:
     api_id = int(os.getenv("TELEGRAM_API_ID", "0"))
@@ -58,5 +65,9 @@ def get_settings() -> Settings:
         max_jobs_global=int(os.getenv("MAX_JOBS_GLOBAL", "3")),
         max_jobs_per_chat_default=int(os.getenv("MAX_JOBS_PER_CHAT", "1")),
         upload_strategy=os.getenv("UPLOAD_STRATEGY", "pyrogram"),
+        spotify_client_id=os.getenv("SPOTIFY_CLIENT_ID", ""),
+        spotify_client_secret=os.getenv("SPOTIFY_CLIENT_SECRET", ""),
+        acr_host=os.getenv("ACRCLOUD_HOST", ""),
+        acr_access_key=os.getenv("ACRCLOUD_ACCESS_KEY", ""),
+        acr_access_secret=os.getenv("ACRCLOUD_ACCESS_SECRET", ""),
     )
-
