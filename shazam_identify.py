@@ -15,55 +15,19 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from dotenv import load_dotenv
 
 from shazamio import Shazam
 from imageio_ffmpeg import get_ffmpeg_exe
+from src.config import get_settings
 
-# Load environment variables from .env file
-load_dotenv()
-
-BASE_DIR = Path(__file__).resolve().parent
-ACRCLOUD_CONFIG_CANDIDATES = (
-    BASE_DIR / "acrcloud.json",
-    BASE_DIR / ".acrcloud.json",
-)
-
+# Initialize centralized settings
+settings = get_settings()
 FFMPEG_EXE = get_ffmpeg_exe()
 
-def _load_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
-
-
 def _load_acrcloud_config() -> dict | None:
-    cfg = {}
-    for path in ACRCLOUD_CONFIG_CANDIDATES:
-        if path.exists():
-            cfg = _load_json(path)
-            if cfg:
-                break
-
-    host = (
-        os.getenv("ACRCLOUD_HOST")
-        or os.getenv("ACR_HOST")
-        or cfg.get("host")
-        or ""
-    ).strip()
-    access_key = (
-        os.getenv("ACRCLOUD_ACCESS_KEY")
-        or os.getenv("ACR_ACCESS_KEY")
-        or cfg.get("access_key")
-        or ""
-    ).strip()
-    access_secret = (
-        os.getenv("ACRCLOUD_ACCESS_SECRET")
-        or os.getenv("ACR_ACCESS_SECRET")
-        or cfg.get("access_secret")
-        or ""
-    ).strip()
+    host = settings.acr_host.strip()
+    access_key = settings.acr_access_key.strip()
+    access_secret = settings.acr_access_secret.strip()
 
     if not (host and access_key and access_secret):
         return None
