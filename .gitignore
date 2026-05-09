@@ -1,6 +1,7 @@
-acrcloud.json
-*.session
+# Environment variables
+.env
+
+# Python cache
 __pycache__/
-*.pyc
-bot.log
-.worktrees/
+TODO.md
+implementation_plan.md

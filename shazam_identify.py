@@ -15,9 +15,13 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+from dotenv import load_dotenv
 
 from shazamio import Shazam
 from imageio_ffmpeg import get_ffmpeg_exe
+
+# Load environment variables from .env file
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 ACRCLOUD_CONFIG_CANDIDATES = (

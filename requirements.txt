@@ -1,0 +1,11 @@
+python-telegram-bot
+yt-dlp
+pyrogram
+tgcrypto
+spotdl
+instaloader
+imageio-ffmpeg
+python-dotenv
+mutagen
+syncedlyrics
+shazamio

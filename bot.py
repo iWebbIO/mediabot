@@ -22,6 +22,7 @@ import logging
 import tempfile
 import subprocess
 from pathlib import Path
+from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
@@ -30,6 +31,8 @@ from telegram.ext import (
 )
 from imageio_ffmpeg import get_ffmpeg_exe
 
+# Load environment variables
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Global ffmpeg path for container compatibility
 FFMPEG_EXE = get_ffmpeg_exe()
 
-BOT_TOKEN = "8675266123:AAGUD7N3JsNUyvvj08tboAGyKSgUPI3pJ8Y"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 DOWNLOAD_DIR = Path.home() / "Documents" / "bot_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -1056,8 +1059,8 @@ def _yt_search_sync(query: str, n: int = 10) -> list[dict]:
     return results
 
 
-SP_CLIENT_ID     = "57bd4e27a02543e69231328957fb3f88"
-SP_CLIENT_SECRET = "3fda9a99e45b41cf9ce53bde528acc6d"
+SP_CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID")
+SP_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 def _sp_get_token() -> str:
     import base64
